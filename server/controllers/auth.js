@@ -5,11 +5,11 @@ const OTP = require('../models/OTP');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { sendSMS } = require('../utils/sms'); // Africas Talking SMS utility
 
-// Import Twilio
-const { sendSMS } = require('../utils/sms'); // We'll create this file
-
-// Send OTP (Phone Only)
+/**
+ * Send OTP to user's phone number
+ */
 exports.sendOTP = async (req, res) => {
   const { phone } = req.body;
 
@@ -17,14 +17,17 @@ exports.sendOTP = async (req, res) => {
     return res.status(400).json({ error: 'Phone number is required' });
   }
 
-  let user = await User.findOne({ phone });
+  // Normalize phone number (remove spaces, ensure +234 or 0 format)
+  const normalizedPhone = phone.replace(/\s+/g, '');
+  // Africas Talking works with +234 or 0 prefixes
+
+  let user = await User.findOne({ phone: normalizedPhone });
   const userId = user ? user._id : new mongoose.Types.ObjectId();
 
   if (!user) {
-    // Create temp user
     user = new User({
       _id: userId,
-      phone,
+      phone: normalizedPhone,
       verified: false,
     });
     await user.save({ validateBeforeSave: false });
@@ -33,7 +36,7 @@ exports.sendOTP = async (req, res) => {
   // Generate 6-digit OTP
   const code = crypto.randomInt(100000, 999999).toString();
 
-  // Save OTP to DB
+  // Save OTP to database
   const otp = new OTP({
     userId,
     code,
@@ -42,23 +45,30 @@ exports.sendOTP = async (req, res) => {
   await otp.save();
 
   // ✅ Log OTP to console (for debugging)
-  console.log(`🔐 OTP for ${phone}: ${code}`);
+  console.log(`🔐 OTP for ${normalizedPhone}: ${code}`);
 
-  // ✅ Send real SMS
+  // ✅ Send SMS via Africas Talking
   try {
-    await sendSMS(phone, `Your Whisper verification code: ${code}`);
+    await sendSMS(normalizedPhone, `Your Whisper verification code is ${code}. Valid for 5 minutes.`);
+    console.log(`✅ SMS sent successfully to ${normalizedPhone}`);
     res.json({ message: 'OTP sent', userId: userId.toString() });
   } catch (err) {
-    console.error('SMS failed:', err.message);
-    // Still allow OTP in dev (fallback)
-    return res.json({ message: 'OTP sent (SMS failed)', userId: userId.toString() });
+    console.error('❌ SMS failed:', err.message);
+    // Still return success in dev mode so you can test with console OTP
+    res.status(200).json({
+      message: 'OTP sent (SMS failed - check console)',
+      userId: userId.toString()
+    });
   }
 };
 
-// Verify OTP and Complete Login/Register
+/**
+ * Verify OTP and complete login/register
+ */
 exports.verifyOTP = async (req, res) => {
   const { userId, code, name, password } = req.body;
 
+  // Find valid OTP
   const otp = await OTP.findOne({ userId, code });
   if (!otp || otp.expiresAt < new Date()) {
     return res.status(400).json({ error: 'Invalid or expired OTP' });
@@ -68,17 +78,19 @@ exports.verifyOTP = async (req, res) => {
   const isExisting = !!user;
 
   if (!user) {
+    // New user: register
     if (!name || !password) {
       return res.status(400).json({ error: 'Name and password required' });
     }
-    const hashed = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
     user = await User.create({
       name,
       phone: otp.userId, // Will be linked from OTP
-      password: hashed,
+      password: hashedPassword,
       verified: true,
     });
   } else {
+    // Existing user: mark as verified
     user.verified = true;
     await user.save();
   }
@@ -92,6 +104,9 @@ exports.verifyOTP = async (req, res) => {
     process.env.JWT_SECRET,
     { expiresIn: '7d' }
   );
+
+  // ✅ Confirm in console
+  console.log(`✅ User ${user.name} (${user.phone}) ${isExisting ? 'logged in' : 'registered'} successfully`);
 
   res.json({
     message: isExisting ? 'Logged in' : 'Registered',
