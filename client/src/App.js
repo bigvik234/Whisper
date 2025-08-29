@@ -1,23 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 const App = () => {
-  const [currentPage, setCurrentPage] = useState('login');
+  const [currentPage, setCurrentPage] = useState('phone');
+  const [countryCode, setCountryCode] = useState('+234');
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [email, setEmail] = useState('');
-  const [name, setName] = useState('');
   const [otp, setOtp] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [name, setName] = useState('');
+  const [chats, setChats] = useState([]);
   const [selectedChat, setSelectedChat] = useState(null);
   const [message, setMessage] = useState('');
-  const [chats, setChats] = useState([]);
-  const [activeTab, setActiveTab] = useState('chats');
-  const [searchQuery, setSearchQuery] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
-  const [verificationStep, setVerificationStep] = useState(1);
   const [countdown, setCountdown] = useState(0);
+  const [userId, setUserId] = useState(null);
   const messagesEndRef = useRef(null);
-  const [userId, setUserId] = useState(null); // Store temp user ID from backend
 
   // OTP countdown
   useEffect(() => {
@@ -51,25 +46,27 @@ const App = () => {
     return diffDays === 0 ? timeString : `${time.getMonth() + 1}/${time.getDate()}`;
   };
 
-  const handleLoginSubmit = async (e) => {
+  // --- AUTH FLOW ---
+
+  // Step 1: Send OTP
+  const handleSendOTP = async (e) => {
     e.preventDefault();
-    if (!phoneNumber && !email) return;
+    if (!phoneNumber) return;
+
+    // ✅ Combine country code and phone number
+    const fullPhone = `${countryCode}${phoneNumber.replace(/\s+/g, '')}`;
 
     try {
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: phoneNumber || undefined,
-          email: email || undefined,
-        }),
+        body: JSON.stringify({ phone: fullPhone }),
       });
 
       const data = await res.json();
       if (res.ok) {
         setUserId(data.userId);
-        setCurrentPage('verification');
-        setVerificationStep(1);
+        setCurrentPage('otp');
         setCountdown(60);
       } else {
         alert('Error: ' + data.error);
@@ -79,59 +76,16 @@ const App = () => {
     }
   };
 
-  const handleRegisterSubmit = async (e) => {
-    e.preventDefault();
-    if (!name || (!phoneNumber && !email) || password !== confirmPassword) return;
-
-    try {
-      const res = await fetch('/api/auth/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: phoneNumber || undefined,
-          email: email || undefined,
-        }),
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setUserId(data.userId);
-        setCurrentPage('verification');
-        setVerificationStep(1);
-        setCountdown(60);
-      } else {
-        alert('Error: ' + data.error);
-      }
-    } catch (err) {
-      alert('Network error. Is backend running?');
-    }
-  };
-
-  const handleResendOTP = async () => {
-    if (countdown > 0) return;
-    await handleLoginSubmit({ preventDefault: () => {} });
-  };
-
-  const handleVerificationSubmit = async (e) => {
+  // Step 2: Verify OTP
+  const handleVerifyOTP = async (e) => {
     e.preventDefault();
     if (otp.length !== 6) return;
-
-    const payload = { userId, code: otp };
-
-    if (verificationStep === 2) {
-      if (password !== confirmPassword) {
-        alert('Passwords do not match');
-        return;
-      }
-      // ✅ Fixed: 'phone' → 'phoneNumber'
-      Object.assign(payload, { name, email, phoneNumber, password });
-    }
 
     try {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ userId, code: otp }),
       });
 
       const data = await res.json();
@@ -139,13 +93,45 @@ const App = () => {
       if (res.ok) {
         localStorage.setItem('token', data.token);
         setCurrentUser(data.user);
-        loadChats(data.token);
-        setCurrentPage('chat');
+
+        // If new user, go to setup
+        if (!data.isExisting) {
+          setCurrentPage('setup');
+        } else {
+          loadChats(data.token);
+          setCurrentPage('chat');
+        }
       } else {
-        alert('Error: ' + data.error);
+        alert('Invalid OTP');
       }
     } catch (err) {
-      alert('Network error: ' + err.message);
+      alert('Error verifying OTP');
+    }
+  };
+
+  // Step 3: Set Name (for new users)
+  const handleSetupProfile = async (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+
+    try {
+      const res = await fetch('/api/auth/setup-profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ name }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setCurrentUser(prev => ({ ...prev, name }));
+        loadChats(localStorage.getItem('token'));
+        setCurrentPage('chat');
+      }
+    } catch (err) {
+      alert('Failed to set name');
     }
   };
 
@@ -191,16 +177,13 @@ const App = () => {
   };
 
   const handleLogout = () => {
-    setCurrentPage('login');
+    setCurrentPage('phone');
     setCurrentUser(null);
     setSelectedChat(null);
     setChats([]);
     setPhoneNumber('');
-    setEmail('');
-    setName('');
-    setPassword('');
-    setConfirmPassword('');
     setOtp('');
+    setName('');
     setUserId(null);
     setCountdown(0);
     localStorage.removeItem('token');
@@ -208,7 +191,7 @@ const App = () => {
 
   // --- RENDER PAGES ---
 
-  if (currentPage === 'login') {
+  if (currentPage === 'phone') {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
@@ -219,168 +202,49 @@ const App = () => {
               </svg>
             </div>
             <h1 className="text-3xl font-bold text-gray-900">Whisper</h1>
-            <p className="text-gray-600 mt-2">Sign in to your account</p>
+            <p className="text-gray-600 mt-2">Enter your phone number to continue</p>
           </div>
 
-          <form onSubmit={handleLoginSubmit} className="space-y-6">
+          <form onSubmit={handleSendOTP} className="space-y-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number or Email</label>
-              <div className="space-y-4">
-                <input
-                  type="tel"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  placeholder="Phone number"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-                <div className="flex items-center my-2">
-                  <div className="flex-1 border-t border-gray-300"></div>
-                  <span className="px-4 text-gray-500 text-sm">or</span>
-                  <div className="flex-1 border-t border-gray-300"></div>
-                </div>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Email address"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-              </div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
+              <div className="flex gap-2 w-full">
+  <select
+    value={countryCode}
+    onChange={(e) => setCountryCode(e.target.value)}
+    className="w-36 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+  >
+    <option value="+234">🇳🇬 +234 (Nigeria)</option>
+    <option value="+1">🇺🇸 +1 (US/Canada)</option>
+    <option value="+44">🇬🇧 +44 (UK)</option>
+    <option value="+91">🇮🇳 +91 (India)</option>
+    <option value="+254">🇰🇪 +254 (Kenya)</option>
+    <option value="+61">🇦🇺 +61 (Australia)</option>
+  </select>
+  <input
+    type="tel"
+    value={phoneNumber}
+    onChange={(e) => setPhoneNumber(e.target.value)}
+    placeholder="803 123 4567"
+    className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+    required
+  />
+</div>
             </div>
 
             <button
               type="submit"
               className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
             >
-              Continue
+              Send OTP
             </button>
           </form>
-
-          <div className="mt-6 text-center">
-            <p className="text-gray-600">
-              Don't have an account?{' '}
-              <button
-                onClick={() => setCurrentPage('register')}
-                className="text-green-600 hover:text-green-700 font-medium"
-              >
-                Sign up
-              </button>
-            </p>
-          </div>
         </div>
       </div>
     );
   }
 
-  if (currentPage === 'register') {
-    return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="w-20 h-20 bg-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-              </svg>
-            </div>
-            <h1 className="text-3xl font-bold text-gray-900">Whisper</h1>
-            <p className="text-gray-600 mt-2">Create a new account</p>
-          </div>
-
-          <form onSubmit={handleRegisterSubmit} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Enter your full name"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number or Email</label>
-              <div className="space-y-4">
-                <input
-                  type="tel"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  placeholder="Phone number (optional)"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-                <div className="flex items-center my-2">
-                  <div className="flex-1 border-t border-gray-300"></div>
-                  <span className="px-4 text-gray-500 text-sm">or</span>
-                  <div className="flex-1 border-t border-gray-300"></div>
-                </div>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Email address"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                  required
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Create a password"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Confirm your password"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                required
-              />
-            </div>
-
-            {password && confirmPassword && password !== confirmPassword && (
-              <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg text-sm">
-                Passwords don't match
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={!password || password !== confirmPassword}
-              className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
-            >
-              Create Account
-            </button>
-          </form>
-
-          <div className="mt-6 text-center">
-            <p className="text-gray-600">
-              Already have an account?{' '}
-              <button
-                onClick={() => setCurrentPage('login')}
-                className="text-green-600 hover:text-green-700 font-medium"
-              >
-                Sign in
-              </button>
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (currentPage === 'verification') {
+  if (currentPage === 'otp') {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
@@ -390,90 +254,81 @@ const App = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
               </svg>
             </div>
-            <h1 className="text-3xl font-bold text-gray-900">Verify Your Account</h1>
-            <p className="text-gray-600 mt-2">
-              {verificationStep === 1
-                ? `We've sent a 6-digit code to ${phoneNumber || email}`
-                : 'Create a password to secure your account'}
-            </p>
+            <h1 className="text-3xl font-bold text-gray-900">Verify Your Number</h1>
+            <p className="text-gray-600 mt-2">We've sent a 6-digit code to {countryCode} {phoneNumber}</p>
           </div>
 
-          <form onSubmit={handleVerificationSubmit} className="space-y-6">
-            {verificationStep === 1 ? (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Verification Code</label>
-                  <input
-                    type="text"
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value)}
-                    placeholder="Enter 6-digit code"
-                    maxLength="6"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent text-center text-lg"
-                    required
-                  />
-                </div>
-                <p className="text-sm text-gray-500 text-center">
-                  Didn't receive the code?{' '}
-                  <button
-                    type="button"
-                    onClick={handleResendOTP}
-                    disabled={countdown > 0}
-                    className={`text-green-600 hover:text-green-700 ${countdown > 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    {countdown > 0 ? `Resend in ${countdown}s` : 'Resend'}
-                  </button>
-                </p>
-              </>
-            ) : (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">New Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Create a new password"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
-                  <input
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Confirm your password"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                    required
-                  />
-                </div>
-                {password && confirmPassword && password !== confirmPassword && (
-                  <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg text-sm">
-                    Passwords don't match
-                  </div>
-                )}
-              </>
-            )}
+          <form onSubmit={handleVerifyOTP} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Enter Code</label>
+              <input
+                type="text"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value)}
+                placeholder="Enter 6-digit code"
+                maxLength="6"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent text-center text-lg"
+                required
+              />
+            </div>
+            <p className="text-sm text-gray-500 text-center">
+              Didn't receive the code?{' '}
+              <button
+                type="button"
+                onClick={handleSendOTP}
+                disabled={countdown > 0}
+                className={`text-green-600 hover:text-green-700 ${countdown > 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {countdown > 0 ? `Resend in ${countdown}s` : 'Resend'}
+              </button>
+            </p>
 
             <button
               type="submit"
-              disabled={verificationStep === 2 && (!password || password !== confirmPassword)}
-              className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
             >
-              {verificationStep === 1 ? 'Verify Code' : 'Complete Setup'}
+              Verify
             </button>
           </form>
+        </div>
+      </div>
+    );
+  }
 
-          <div className="mt-6 text-center">
-            <button
-              onClick={() => setCurrentPage('login')}
-              className="text-gray-600 hover:text-gray-800 text-sm"
-            >
-              Back to Login
-            </button>
+  if (currentPage === 'setup') {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-20 h-20 bg-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            </div>
+            <h1 className="text-3xl font-bold text-gray-900">Almost Done!</h1>
+            <p className="text-gray-600 mt-2">Set your name to get started</p>
           </div>
+
+          <form onSubmit={handleSetupProfile} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Your Name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter your name"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+            >
+              Continue
+            </button>
+          </form>
         </div>
       </div>
     );
@@ -481,7 +336,7 @@ const App = () => {
 
   if (currentPage === 'chat' && currentUser) {
     const filteredChats = chats.filter(chat =>
-      chat.name.toLowerCase().includes(searchQuery.toLowerCase())
+      chat.name.toLowerCase().includes('')
     );
 
     return (
@@ -497,24 +352,19 @@ const App = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
               </button>
-              <button className="hover:bg-white/20 p-2 rounded-full transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                </svg>
-              </button>
             </div>
           </div>
 
           {/* User Profile */}
           <div className="p-4 border-b border-gray-200 flex items-center space-x-3">
             <img
-              src={`https://placehold.co/40x40/6366f1/ffffff?text=${currentUser.name.charAt(0)}`}
-              alt={currentUser.name}
+              src={`https://placehold.co/40x40/6366f1/ffffff?text=${currentUser?.name?.charAt(0) || 'U'}`}
+              alt={currentUser?.name || 'User'}
               className="w-10 h-10 rounded-full object-cover"
             />
             <div className="flex-1">
               <h3 className="font-medium text-gray-900">{currentUser.name}</h3>
-              <p className="text-sm text-gray-500">{currentUser.phone || currentUser.email}</p>
+              <p className="text-sm text-gray-500">{currentUser.phone}</p>
             </div>
             <button
               onClick={handleLogout}
@@ -527,42 +377,12 @@ const App = () => {
             </button>
           </div>
 
-          {/* Tabs */}
-          <div className="flex border-b border-gray-200">
-            <button
-              onClick={() => setActiveTab('chats')}
-              className={`flex-1 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'chats' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Chats
-            </button>
-            <button
-              onClick={() => setActiveTab('status')}
-              className={`flex-1 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'status' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Status
-            </button>
-            <button
-              onClick={() => setActiveTab('calls')}
-              className={`flex-1 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'calls' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Calls
-            </button>
-          </div>
-
           {/* Search */}
           <div className="p-3 border-b border-gray-200">
             <div className="relative">
               <input
                 type="text"
                 placeholder="Search or start new chat"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
               />
               <svg
@@ -630,23 +450,6 @@ const App = () => {
                     <p className="text-sm text-gray-500">online</p>
                   </div>
                 </div>
-                <div className="flex space-x-3">
-                  <button className="hover:bg-gray-100 p-2 rounded-full transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                    </svg>
-                  </button>
-                  <button className="hover:bg-gray-100 p-2 rounded-full transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                  <button className="hover:bg-gray-100 p-2 rounded-full transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                    </svg>
-                  </button>
-                </div>
               </div>
 
               {/* Messages */}
@@ -682,22 +485,6 @@ const App = () => {
               {/* Message Input */}
               <div className="bg-white border-t border-gray-200 p-3">
                 <form onSubmit={handleSendMessage} className="flex items-center space-x-3">
-                  <button
-                    type="button"
-                    className="text-gray-500 hover:text-gray-700 transition-colors"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1.5a2.5 2.5 0 005 0H14M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H5a2 2 0 00-2 2v5a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    className="text-gray-500 hover:text-gray-700 transition-colors"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                  </button>
                   <input
                     type="text"
                     value={message}
